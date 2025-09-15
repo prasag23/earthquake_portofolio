@@ -1,67 +1,78 @@
-import warnings
-warnings.filterwarnings('ignore')
-from pathlib import Path
 import pandas as pd
 import numpy as np
-from sklearn.ensemble import RandomForestRegressor
-from sklearn.metrics import mean_squared_error, mean_absolute_error
-from sklearn.pipeline import Pipeline
-from sklearn.impute import SimpleImputer
-from sklearn.preprocessing import StandardScaler
-import joblib
-from data_loader import load_catalog, basic_cleaning, add_time_features, add_spatiotemporal_lags
+from pathlib import Path
+import csv
 
-DATA_PATH = Path('/mnt/data/katalog_gempa_v2.tsv')
+def load_catalog(path):
+    p = Path(path)
+    if not p.exists():
+        raise FileNotFoundError(f"Catalog not found: {path}")
+    df = pd.read_csv(
+        path,
+        sep="\t",
+        dtype=str,
+        quoting=csv.QUOTE_NONE,
+        engine="python",
+        on_bad_lines="skip"
+    )
+    # Map relevant columns
+    colmap = {
+        "datetime": "time",
+        "latitude": "lat",
+        "longitude": "lon",
+        "magnitude": "mag",
+        "depth": "depth"
+    }
+    for old, new in colmap.items():
+        if old in df.columns:
+            df[new] = df[old]
+    return df
 
-def main():
-    print('Loading catalog...')
-    df = load_catalog(DATA_PATH)
-    df = basic_cleaning(df)
-    df = add_time_features(df)
-    df = add_spatiotemporal_lags(df)
-    print(f'Rows after cleaning: {len(df)}')
-    # handle alternate column names
-    mag_col = 'mag' if 'mag' in df.columns else ('magnitude' if 'magnitude' in df.columns else None)
-    lat_col = 'lat' if 'lat' in df.columns else ('latitude' if 'latitude' in df.columns else None)
-    lon_col = 'lon' if 'lon' in df.columns else ('longitude' if 'longitude' in df.columns else None)
-    if mag_col is None or lat_col is None or lon_col is None:
-        print('Required columns not found (mag/magnitude, lat/latitude, lon/longitude). Exiting.')
-        return
-    # create consistent columns
-    df['mag_target'] = pd.to_numeric(df[mag_col], errors='coerce')
-    df['lat'] = pd.to_numeric(df[lat_col], errors='coerce')
-    df['lon'] = pd.to_numeric(df[lon_col], errors='coerce')
-    features = ['lat','lon','depth','hour_sin','hour_cos','doy_sin','doy_cos','prev_mag','time_since_prev_sec']
-    # ensure features exist
-    for f in features:
-        if f not in df.columns:
-            df[f] = pd.NA
-    df_features = df[features + ['mag_target']].copy()
-    df_features = df_features[~df_features['mag_target'].isna()].reset_index(drop=True)
-    if len(df_features) < 10:
-        print('Not enough rows for training demo; exiting.')
-        return
-    split_idx = int(0.8 * len(df_features))
-    X_train, X_test = df_features[features].values[:split_idx], df_features[features].values[split_idx:]
-    y_train, y_test = df_features['mag_target'].values[:split_idx], df_features['mag_target'].values[split_idx:]
-    pipe = Pipeline([
-        ('imputer', SimpleImputer(strategy='median')),
-        ('scaler', StandardScaler()),
-        ('model', RandomForestRegressor(n_estimators=50, random_state=42, n_jobs=1))
-    ])
-    print('Training RandomForest (demo, 50 trees)...')
-    pipe.fit(X_train, y_train)
-    print('Predicting...')
-    preds = pipe.predict(X_test)
-    rmse = mean_squared_error(y_test, preds, squared=False)
-    mae = mean_absolute_error(y_test, preds)
-    print(f'RMSE: {rmse:.3f}, MAE: {mae:.3f}')
-    model_dir = Path('models')
-    model_dir.mkdir(exist_ok=True)
-    joblib.dump(pipe, model_dir/'rf_baseline.joblib')
-    report = f"""# Demo Report\n\nRows used: {len(df_features)}\nTrain/test split index: {split_idx}\nRMSE: {rmse:.3f}\nMAE: {mae:.3f}\n\nFeatures used: {features}\n\nNotes: This is a baseline demonstration. For portfolio, extend to XGBoost, LSTM/Transformer time-series, and domain-specific QA such as magnitude-of-completeness and declustering."""
-    Path('report.md').write_text(report)
-    print('Saved model to models/rf_baseline.joblib and report.md')
+def basic_cleaning(df):
+    df = df.copy()
+    if "mag" in df.columns:
+        df["mag"] = pd.to_numeric(df["mag"], errors="coerce")
+        df = df[~df["mag"].isna()].reset_index(drop=True)
+    for col in ["lat","lon","depth"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+    if "time" in df.columns:
+        df["time"] = pd.to_datetime(df["time"], errors="coerce")
+        df = df[~df["time"].isna()]
+    return df
 
-if __name__ == '__main__':
-    main()
+def add_time_features(df):
+    df = df.copy()
+    if "time" not in df.columns:
+        return df
+    df["hour"] = df["time"].dt.hour.fillna(0).astype(int)
+    df["dayofyear"] = df["time"].dt.dayofyear.fillna(0).astype(int)
+    df["year"] = df["time"].dt.year.fillna(0).astype(int)
+    df["hour_sin"] = np.sin(2*np.pi*df["hour"]/24)
+    df["hour_cos"] = np.cos(2*np.pi*df["hour"]/24)
+    df["doy_sin"] = np.sin(2*np.pi*df["dayofyear"]/365.25)
+    df["doy_cos"] = np.cos(2*np.pi*df["dayofyear"]/365.25)
+    return df
+
+def add_spatiotemporal_lags(df, grid_size_deg=0.5):
+    df = df.copy()
+    if "lat" not in df.columns or "lon" not in df.columns:
+        return df
+    df["grid_lat"] = (df["lat"] / grid_size_deg).round(0) * grid_size_deg
+    df["grid_lon"] = (df["lon"] / grid_size_deg).round(0) * grid_size_deg
+    if "time" in df.columns:
+        df = df.sort_values("time").reset_index(drop=True)
+    else:
+        df = df.reset_index(drop=True)
+    df["prev_mag"] = np.nan
+    df["time_since_prev_sec"] = np.nan
+    last_seen = {}
+    for i, row in df.iterrows():
+        key = (row.get("grid_lat"), row.get("grid_lon"))
+        if key in last_seen:
+            prev_idx, prev_time = last_seen[key]
+            df.at[i, "prev_mag"] = df.at[prev_idx, "mag"]
+            if "time" in df.columns and pd.notna(prev_time) and pd.notna(row.get("time")):
+                df.at[i, "time_since_prev_sec"] = (row["time"] - prev_time).total_seconds()
+        last_seen[key] = (i, row.get("time"))
+    return df
