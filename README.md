@@ -5,7 +5,7 @@
 **Author:** prasag23
 
 
-This repository contains a reproducible pipeline to clean earthquake catalog data, perform feature engineering, train a baseline model (RandomForest) to predict event magnitude, evaluate results, and produce a short report. Designed for use as a portfolio piece for geoscience graduates.
+This repository contains a reproducible pipeline to clean earthquake catalog data, perform feature engineering, train a baseline model (RandomForest) to predict event magnitude, evaluate results, and produce a short report.
 
 
 ## Files
