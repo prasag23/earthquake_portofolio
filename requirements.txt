@@ -1,0 +1,6 @@
+numpy
+pandas
+scikit-learn
+joblib
+# xgboost (optional)
+# tensorflow (optional, for LSTM)
